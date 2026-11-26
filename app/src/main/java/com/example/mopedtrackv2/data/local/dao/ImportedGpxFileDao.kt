@@ -23,13 +23,32 @@ interface ImportedGpxFileDao {
 
     @Query("UPDATE imported_gpx_files SET isVisibleOnMap = :isVisible WHERE fileHash = :hash")
     suspend fun updateVisibility(hash: String, isVisible: Boolean)
+
+    @Query("UPDATE imported_gpx_files SET isVisibleOnMap = :isVisible")
+    suspend fun updateAllVisibility(isVisible: Boolean)
     
     @Query("SELECT * FROM imported_gpx_files WHERE isVisibleOnMap = 1")
     fun getVisibleFilesFlow(): Flow<List<ImportedGpxFileEntity>>
+
+    @Query("DELETE FROM imported_gpx_files WHERE fileHash = :hash")
+    suspend fun deleteFileByHash(hash: String)
 
     @Query("DELETE FROM imported_gpx_files WHERE encodedTrace = ''")
     suspend fun deleteLegacyTraces()
     
     @Query("UPDATE imported_gpx_files SET segmentsCompletedCount = 0")
     suspend fun resetAllSegmentsCompletedCount()
+
+    @Query("""
+        SELECT
+            COUNT(*) AS totalGpxFiles,
+            COALESCE(SUM(trackPointCount), 0) AS totalTrackPoints
+        FROM imported_gpx_files
+    """)
+    fun getGpxArchiveStatsFlow(): Flow<GpxArchiveStatsAggregate>
 }
+
+data class GpxArchiveStatsAggregate(
+    val totalGpxFiles: Int,
+    val totalTrackPoints: Long
+)

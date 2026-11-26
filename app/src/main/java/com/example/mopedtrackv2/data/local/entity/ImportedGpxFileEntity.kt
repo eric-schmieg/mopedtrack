@@ -11,5 +11,8 @@ data class ImportedGpxFileEntity(
     val trackPointCount: Int,
     val segmentsCompletedCount: Int,
     val encodedTrace: String = "",
-    val isVisibleOnMap: Boolean = false
+    val isVisibleOnMap: Boolean = false,
+    val distanceMeters: Double = 0.0,
+    val durationMillis: Long? = null,
+    val recordedAt: Long? = null
 )

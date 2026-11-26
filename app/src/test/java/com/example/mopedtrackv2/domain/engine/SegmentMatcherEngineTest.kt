@@ -117,4 +117,42 @@ class SegmentMatcherEngineTest {
         val result = SegmentMatcherEngine.evaluateSegment(segment, trace, 15.0, 80.0)
         assertTrue("Should match if 80%+ of sub-points are covered even if start node was missed", result)
     }
+
+    @Test
+    fun `test short perpendicular side street rejection when driving past intersection`() {
+        // Short horizontal side street (East-West) from (0.0, 0.0) to (0.0, 0.0002) (~22 meters long)
+        val sideStreetPoints = listOf(Pair(0.0, 0.0), Pair(0.0, 0.0002))
+        val sideStreet = createSegment(sideStreetPoints)
+
+        // Trace drives North-South past the intersection at (0.0, 0.0002)
+        val trace = listOf(
+            GpsPoint(0.001, 0.0002),
+            GpsPoint(0.0005, 0.0002),
+            GpsPoint(0.0, 0.0002),
+            GpsPoint(-0.0005, 0.0002),
+            GpsPoint(-0.001, 0.0002)
+        )
+
+        val result = SegmentMatcherEngine.evaluateSegment(sideStreet, trace, 15.0, 80.0)
+        assertFalse("Should reject short side street when driving perpendicular past it on main road", result)
+    }
+
+    @Test
+    fun `test TraceSpatialIndex world bounds query does not OOM and returns candidate segments`() {
+        val tracePoints = listOf(
+            GpsPoint(47.6062, -122.3321),
+            GpsPoint(47.6065, -122.3325),
+            GpsPoint(47.6070, -122.3330)
+        )
+        val index = TraceSpatialIndex(tracePoints)
+
+        val worldCandidates = index.getCandidateTraceSegments(-90.0, 90.0, -180.0, 180.0)
+        org.junit.Assert.assertEquals(2, worldCandidates.size)
+
+        val localCandidates = index.getCandidateTraceSegments(47.6060, 47.6075, -122.3335, -122.3315)
+        org.junit.Assert.assertEquals(2, localCandidates.size)
+
+        val emptyCandidates = index.getCandidateTraceSegments(0.0, 1.0, 0.0, 1.0)
+        org.junit.Assert.assertTrue(emptyCandidates.isEmpty())
+    }
 }

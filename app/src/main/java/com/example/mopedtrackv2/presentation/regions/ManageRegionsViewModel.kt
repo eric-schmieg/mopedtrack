@@ -8,9 +8,12 @@ import com.example.mopedtrackv2.domain.repository.MopedRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -56,6 +59,9 @@ class ManageRegionsViewModel(
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private val _snackbarMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val snackbarMessages: SharedFlow<String> = _snackbarMessages.asSharedFlow()
 
     private var searchJob: Job? = null
 
@@ -109,8 +115,10 @@ class ManageRegionsViewModel(
                 throw e
             } catch (e: Exception) {
                 e.printStackTrace()
-                val message = if (e is OverpassException || e.message?.contains("Overpass") == true || e.message?.contains("502") == true) {
-                    "Overpass servers are currently busy (HTTP 502). Please try again in a moment."
+                val message = if (e is OverpassException) {
+                    e.message ?: "OpenStreetMap servers are busy. Please try again in a few minutes."
+                } else if (e is retrofit2.HttpException && e.code() in 500..599) {
+                    "Server is busy (HTTP ${e.code()}). Please try again in a moment."
                 } else {
                     e.localizedMessage ?: "Failed to search regions. Check your network connection."
                 }
@@ -135,11 +143,13 @@ class ManageRegionsViewModel(
                     _importProgress.value = progress
                     _importStatusMessage.value = status
                 }
-                _searchResults.value = emptyList() // clear results after importing
+                _searchResults.value = emptyList()
             } catch (e: Exception) {
                 e.printStackTrace()
-                val message = if (e is OverpassException || e.message?.contains("Overpass") == true || e.message?.contains("502") == true) {
-                    "Overpass servers are currently busy (HTTP 502). Please try again in a moment."
+                val message = if (e is OverpassException) {
+                    e.message ?: "OpenStreetMap servers are busy. Please try again in a few minutes."
+                } else if (e is retrofit2.HttpException && e.code() in 500..599) {
+                    "Server is busy (HTTP ${e.code()}). Please try again in a moment."
                 } else {
                     e.localizedMessage ?: "Failed to import region '${region.name}'."
                 }
@@ -164,14 +174,24 @@ class ManageRegionsViewModel(
             _importStatusMessage.value = "Starting refresh..."
             _errorMessage.value = null
             try {
-                repository.importRegion(region) { progress, status ->
+                val result = repository.refreshRegion(region.regionId) { progress, status ->
                     _importProgress.value = progress
                     _importStatusMessage.value = status
                 }
+                val gpxPart = if (result.gpxMatchedNewSegmentsCount > 0) {
+                    ", ${result.gpxMatchedNewSegmentsCount} GPX-matched"
+                } else {
+                    ""
+                }
+                _snackbarMessages.tryEmit(
+                    "Refreshed ${result.regionName}: ${result.newSegmentsCount} new segments added (${result.preservedCompletedCount} completed preserved$gpxPart)"
+                )
             } catch (e: Exception) {
                 e.printStackTrace()
-                val message = if (e is OverpassException || e.message?.contains("Overpass") == true || e.message?.contains("502") == true) {
-                    "Overpass servers are currently busy (HTTP 502). Please try again in a moment."
+                val message = if (e is OverpassException) {
+                    e.message ?: "OpenStreetMap servers are busy. Please try again in a few minutes."
+                } else if (e is retrofit2.HttpException && e.code() in 500..599) {
+                    "Server is busy (HTTP ${e.code()}). Please try again in a moment."
                 } else {
                     e.localizedMessage ?: "Failed to refresh region '${region.name}'."
                 }
@@ -197,20 +217,32 @@ class ManageRegionsViewModel(
             _importStatusMessage.value = "Starting full refresh..."
             _errorMessage.value = null
             val total = regionsToRefresh.size
+            var totalNewSegments = 0
+            var totalPreservedCompleted = 0
+            var totalGpxMatched = 0
             try {
                 regionsToRefresh.forEachIndexed { index, region ->
                     _importingRegionId.value = region.regionId
                     _importingRegionName.value = region.name
-                    repository.importRegion(region) { progress, status ->
+                    val result = repository.refreshRegion(region.regionId) { progress, status ->
                         val overallProgress = (index + progress) / total
                         _importProgress.value = overallProgress
                         _importStatusMessage.value = "Region ${index + 1} of $total (${region.name}): $status"
                     }
+                    totalNewSegments += result.newSegmentsCount
+                    totalPreservedCompleted += result.preservedCompletedCount
+                    totalGpxMatched += result.gpxMatchedNewSegmentsCount
                 }
+                val gpxPart = if (totalGpxMatched > 0) ", $totalGpxMatched GPX-matched" else ""
+                _snackbarMessages.tryEmit(
+                    "Refreshed $total regions: $totalNewSegments new segments added ($totalPreservedCompleted completed preserved$gpxPart)"
+                )
             } catch (e: Exception) {
                 e.printStackTrace()
-                val message = if (e is OverpassException || e.message?.contains("Overpass") == true || e.message?.contains("502") == true) {
-                    "Overpass servers are currently busy (HTTP 502). Please try again in a moment."
+                val message = if (e is OverpassException) {
+                    e.message ?: "OpenStreetMap servers are busy. Please try again in a few minutes."
+                } else if (e is retrofit2.HttpException && e.code() in 500..599) {
+                    "Server is busy (HTTP ${e.code()}). Please try again in a moment."
                 } else {
                     e.localizedMessage ?: "Failed to refresh all regions."
                 }

@@ -25,10 +25,10 @@ This document provides a comprehensive overview of **MopedTrackV2** for AI agent
 | **UI Framework** | Jetpack Compose | Compose BOM, Material 3, Adaptive Layouts |
 | **Navigation** | Navigation 3 | `androidx.navigation3.runtime`, `androidx.navigation3.ui` |
 | **Map Rendering** | MapLibre Android SDK | Native vector rendering, MapLibreCompose wrapper |
-| **Database** | Room Database | Version 4 (with schema migrations 1->2, 2->3, 3->4), KSP codegen |
+| **Database** | Room Database | Version 6 (with schema migrations 1->2, 2->3, 3->4, 4->5, 5->6), KSP codegen |
 | **Preferences** | DataStore Preferences | `SettingsDataStore` |
 | **Networking** | Retrofit 2 + Moshi | Moshi KSP codegen, OkHttp, Overpass API with multi-endpoint fallback |
-| **Background Processing** | WorkManager | `CoroutineWorker` (`GpxBulkImportWorker`, `GpxRescanWorker`) |
+| **Background Processing** | WorkManager | `CoroutineWorker` (`GpxBulkImportWorker`, `GpxRescanWorker`, `RegionRefreshWorker`) |
 | **Permissions** | Accompanist Permissions | Location permissions handling |
 | **Concurrency** | Kotlin Coroutines & Flow | StateFlow / SharedFlow architecture |
 | **Testing** | JUnit4, Mockito, Coroutines Test | Unit test coverage for Repository, Engine, ViewModels, Polyline utils |
@@ -45,29 +45,43 @@ app/src/main/java/com/example/mopedtrackv2/
 ├── MopedApplication.kt                  # Application class: initializes MapLibre & Repository singleton
 │
 ├── data/                                # Data Layer
+│   ├── gpx/                             # GPX Export (SAF DocumentFile + fallback)
+│   │   └── GpxExporter.kt               # AndroidGpxExporter writing GPX 1.1 files
 │   ├── local/                           # Room Database, Entities, DAOs & Migrations
 │   │   ├── AppDatabase.kt               # Room database definition (Entities: Region, RoadSegment, ImportedGpx, DebugTrace)
 │   │   ├── dao/                         # RegionDao, RoadSegmentDao, ImportedGpxFileDao, DebugTraceDao
 │   │   └── entity/                      # RegionEntity, RoadSegmentEntity, ImportedGpxFileEntity, DebugTraceEntity
 │   ├── preferences/                     # Settings DataStore implementation
-│   │   └── SettingsDataStore.kt         # Preferences for match radius, threshold, layer visibility
+│   │   └── SettingsDataStore.kt         # Preferences for match radius, threshold, layer visibility, ride GPS & export URI
 │   ├── remote/                          # Remote Data Sources
 │   │   ├── OsmApi.kt                    # Nominatim search API & Overpass query API interface
 │   │   └── RetrofitClient.kt            # Retrofit setup with fallback Overpass endpoints
 │   ├── repository/                      # Repository Implementation
-│   │   └── MopedRepositoryImpl.kt       # Handles OSM data fetching, segment pairing, DB operations, settings
+│   │   └── MopedRepositoryImpl.kt       # Handles OSM data fetching, live matching, GPX export, DB operations, settings
+│   ├── service/                         # Foreground Ride Tracking Service & Coordinator
+│   │   ├── RideTraceStore.kt            # Crash-safe append-only disk journal + atomic state store (filesDir/active_ride)
+│   │   ├── RideTrackingController.kt    # Thread-safe StateFlow state machine & active trace buffer with disk recovery
+│   │   └── RideTrackingService.kt       # Foreground location service (PRIORITY_HIGH_ACCURACY) + live segment matching
 │   └── worker/                          # Background Workers
 │       ├── GpxBulkImportWorker.kt       # Scans folder tree for .gpx, parses, matches, and persists
-│       └── GpxRescanWorker.kt           # Rescans all GPX files against segments when parameters change
+│       ├── GpxRescanWorker.kt           # Rescans all GPX files against segments when parameters change
+│       └── WeeklyRegionRefreshWorker.kt # RegionRefreshWorker: weekly unmetered-network region refresh
 │
 ├── domain/                              # Domain Layer
 │   ├── engine/                          # Core Algorithmic Engine
+│   │   ├── LiveSegmentMatcher.kt        # Sliding trace window & padded BBox real-time matching helper
 │   │   └── SegmentMatcherEngine.kt      # Interpolation, TraceSpatialIndex, segment coverage evaluation
-│   ├── gpx/                             # GPX Parsing
-│   │   └── GpxParser.kt                 # XML PullParser for GPX track points
+│   ├── gpx/                             # GPX Parsing & Serialization
+│   │   ├── GpxParser.kt                 # XML PullParser for GPX track points
+│   │   └── GpxWriter.kt                 # Standards-compliant GPX 1.1 XML serializer & filename builder
 │   ├── model/                           # Domain Data Models
+│   │   ├── OsmPinCategory.kt            # OSM mapping note categories
 │   │   ├── Region.kt                    # Domain representation of a Region
-│   │   └── RoadSegment.kt               # Domain representation of a Road Segment
+│   │   ├── RegionRefreshModels.kt       # RegionRefreshResult summary stats from non-destructive refresh
+│   │   ├── RideTrackingModels.kt        # RideRecordingState enum & TrackPoint data class
+│   │   ├── RoadSegment.kt               # Domain representation of a Road Segment
+│   │   ├── StatsSummary.kt              # Overall & per-region coverage stats + GPX archive totals
+│   │   └── UnitSystem.kt                # IMPERIAL / METRIC display units enum
 │   └── repository/                      # Repository Interfaces
 │       └── MopedRepository.kt           # Central repository contract
 │
@@ -84,11 +98,15 @@ app/src/main/java/com/example/mopedtrackv2/
 │   ├── regions/                         # Region Management Screen
 │   │   ├── ManageRegionsScreen.kt       # Search regions online, download OSM roads, delete regions
 │   │   └── ManageRegionsViewModel.kt    # Nominatim search, Overpass downloading state
-│   └── settings/                        # App Settings Screen
-│       ├── SettingsScreen.kt            # Adjust match radius, coverage threshold, debug options
-│       └── SettingsViewModel.kt         # DataStore settings bindings & rescan triggers
+│   ├── settings/                        # App Settings Screen
+│   │   ├── SettingsScreen.kt            # Adjust match radius, coverage threshold, debug options
+│   │   └── SettingsViewModel.kt         # DataStore settings bindings & rescan triggers
+│   └── stats/                           # Coverage & Ride Archive Stats Screen
+│       ├── StatsScreen.kt               # Overall progress, per-region breakdown, and GPX archive cards
+│       └── StatsViewModel.kt            # Reactive StatsSummary & UnitSystem UI state
 │
 └── utils/                               # Utilities & Math Helpers
+    ├── HashUtils.kt                     # SHA-256 hex digest helper for GPX deduplication
     ├── MathUtils.kt                     # Haversine distance, bearing, point-to-line segment distance
     └── PolylineUtils.kt                 # Google Polyline format encoder/decoder & JSON parser
 ```
@@ -106,13 +124,29 @@ When importing a region via Overpass API:
 - **Dead-end roads** are detected (`isDeadEnd`) when one of their endpoints is not shared with any other segment in the region.
 
 ### 4.2 Segment Matcher Engine (`SegmentMatcherEngine.kt`)
-1. **Interpolation:** Segments are discretized into points spaced 5 meters apart (`interpolateSegment`).
-2. **Spatial Grid (`TraceSpatialIndex`):** Trace segments are indexed in a 2D spatial grid cell structure (`cellSize = 0.005` degrees, ~550m).
+1. **Interpolation & Local Road Bearing:** Segments are discretized into points spaced 5 meters apart with local segment bearings (`interpolateSegmentWithBearing`).
+2. **Spatial Grid & Movement Bearing (`TraceSpatialIndex`):** Trace segments are indexed in a 2D spatial grid cell structure (`cellSize = 0.005` degrees, ~550m), with pre-computed movement bearings for trace vectors.
 3. **Bounding Box Overlap:** Candidate trace segments are rapidly retrieved via spatial grid cells.
-4. **Coverage Calculation:**
-   - Computes the percentage of sub-points on the segment within `matchRadiusMeters` of any trace segment.
+4. **Coverage Calculation & Heading Alignment:**
+   - Computes sub-point coverage based on spatial distance (`<= matchRadiusMeters`) AND directional alignment (`MathUtils.parallelAngleDifferenceDegrees <= 50.0°`). This prevents false-positive completions on short side streets when driving straight past intersections.
    - **Dead-End Logic:** Lower coverage threshold (max of `50%` or `threshold - 15%`) plus requirement that either the start or end of the segment was hit.
    - **Regular Segment Logic:** Fully completed if coverage >= `coverageThresholdPercent` (default 80%). If coverage is between 70% and 80%, completed if both start and end 30% regions are covered.
+
+### 4.3 Live Ride Tracking, Real-Time Matching & GPX 1.1 Export
+- **`RideTrackingService` (`data/service/RideTrackingService.kt`):** Android foreground service (`foregroundServiceType="location"`) that manages `FusedLocationProviderClient` with `PRIORITY_HIGH_ACCURACY` strictly while `RideRecordingState == RECORDING`, controlled by `RideLocationCoordinator` using `pollingIntervalMsFlow` and `minDisplacementMetersFlow`. Immediately releases GPS updates on `PAUSED` or `IDLE` and shows a persistent notification with Pause/Resume/Stop actions.
+- **Crash-Safe Disk Persistence & Recovery (`RideTraceStore` / `FileRideTraceStore`):** Every appended `TrackPoint` is immediately appended, flushed, and `fd.sync()`-ed on a dedicated single-thread writer to `filesDir/active_ride/active_ride_points.tsv`, while recording state and `completedSegmentCount` are atomically written via temp-file rename (`active_ride_state.txt`). On app restart after a crash or battery loss, `RideTrackingController` reloads valid points (ignoring any truncated trailing line), restores the ride into `RideRecordingState.PAUSED` so the user can Resume or Save to GPX, and `HomeViewModel` surfaces a recovery Snackbar. Disk draft files are cleared only on `discardRecording()` (or after GPX export succeeds in `saveRideRecording()`).
+- **Real-Time Incremental Matching (`LiveSegmentMatcher`):** As new `TrackPoint`s arrive in `RideTrackingController.activeTrace`, `RideTrackingService` triggers `MopedRepository.matchLiveTraceWindow()` (conflated on `Dispatchers.Default`), querying uncompleted `RoadSegmentEntity` rows around the recent trace window padded by `matchRadiusMeters + 10.0` meters and evaluating them with `SegmentMatcherEngine`. Matched segments (plus any `pairedSegmentId`) are immediately marked `isCompleted = true` in `RoadSegmentDao`, updating the map to green (`#2E7D32`) via Room's reactive `Flow`.
+- **`GpxWriter` (`domain/gpx/GpxWriter.kt`):** Standards-compliant GPX 1.1 XML serializer generating `MopedTrack_YYYY-MM-DD_HH-mm-ss.gpx` files with `<metadata>`, `<trk>`, `<trkseg>`, and `<trkpt lat="..." lon="..."><ele>...</ele><time>ISO-8601</time></trkpt>` elements.
+- **Automatic Export & Deduplication on Save:** Confirming **Save Ride** writes the `.gpx` file via `AndroidGpxExporter` to the configured SAF `gpx_export_tree_uri` (falling back to app external storage `Documents/MopedTrack` if unset or revoked), records its SHA-256 hash (`HashUtils.sha256Hex`) and encoded polyline in `imported_gpx_files` (`isVisibleOnMap = false`) so future `GpxBulkImportWorker` runs skip it, shows `"Ride saved to GPX"`, and resets `activeTrace` to `IDLE`.
+
+### 4.4 Non-Destructive OSM Region Refreshing & Weekly Sync
+- **`MopedRepository.refreshRegion(regionId)` (`MopedRepositoryImpl.kt`):**
+  1. Fetches the latest OSM road network from Overpass (`fetchOverpassResponse`) *before* modifying Room so network/server errors never wipe existing map data.
+  2. Snapshots existing completed `RoadSegmentEntity` rows (`isCompleted`, decoded geometries, and `completedAt` timestamps) into a 2D spatial grid and `osmWayId` lookup.
+  3. Builds the new road segments (`buildRoadSegmentsFromOverpass`), preserves `isCompleted = true` and `completedAt` on any incoming segment whose `osmWayId` + endpoints match OR where `>= 80%` of 5-meter interpolated sub-points fall within `matchRadiusMeters` (with heading alignment) of an old completed segment, and propagates completion across divided-road `pairedSegmentId` partners.
+  4. Re-evaluates stored `ImportedGpxFileEntity` traces against remaining uncompleted/newly mapped segments via `SegmentMatcherEngine` so previously ridden newly mapped roads automatically complete.
+  5. Atomically replaces the region's segments via `RoadSegmentDao.replaceRegionSegments()` inside `database.withTransaction` (`runInTransaction`), returning `RegionRefreshResult`.
+- **Manual & Scheduled Execution:** `ManageRegionsViewModel` / `ManageRegionsScreen` expose per-region and "Refresh All" actions with progress indicators and summary Snackbars. `RegionRefreshWorker` (`WeeklyRegionRefreshWorker.kt`) schedules a 7-day `PeriodicWorkRequest` (`UNIQUE_WORK_NAME = "weekly_region_refresh"`, `NetworkType.UNMETERED`) toggled by `weekly_auto_refresh` in Settings.
 
 ---
 
@@ -123,6 +157,8 @@ The application uses **Jetpack Navigation 3** with explicit route keys (`MopedRo
 - `MopedRoute.ManageRegions`: Search OSM for regions (cities, counties), download road networks, and view installed regions.
 - `MopedRoute.ImportGpx`: Pick individual `.gpx` files or select folders for background WorkManager import.
 - `MopedRoute.Settings`: Configure match radius (meters), coverage threshold (%), and toggle debug overlays.
+- `MopedRoute.OsmPins`: View, filter, and export dropped OpenStreetMap mapping notes.
+- `MopedRoute.Stats`: Dedicated Stats screen (`StatsScreen` / `StatsPanelContent`, accessible from the hamburger menu `≡`) showing overall coverage, per-region breakdown, and GPX archive totals.
 
 ---
 
@@ -139,10 +175,17 @@ The application uses **Jetpack Navigation 3** with explicit route keys (`MopedRo
 | **Interact with UI** | `adb_shell_input(command="tap" / "swipe" / "text" / "keyevent", ...)` |
 | **Read Logcat Output** | `read_logcat(serialNumber="", applicationId="com.example.mopedtrackv2", ...)` |
 
+> **Windows Terminal Sandbox Note:** On this Windows host, `java.exe` (Gradle/wrapper) hangs immediately inside the default terminal sandbox, and `adb` / `android` CLI commands are blocked from accessing `~/.android` (`C:\Users\erit1\.android`) and device sockets. Run `./gradlew.bat` builds/tests, `adb`, and `android` CLI commands with `BypassSandbox: true` (after attempting sandboxed only if required by environment rules). When multiple devices are attached, pass `-s <serial>` (e.g., `-s emulator-5554`) to `adb` and `--device=<serial>` to `android`.
+
 ### Unit Test Suites:
-- `MopedRepositoryImplTest`: Tests OSM downloading, region deletion, and segment pairing.
+- `MopedRepositoryImplTest`: Tests OSM downloading, region deletion, segment pairing, live trace window matching, GPX save export/deduplication, and aggregated `getStatsSummaryFlow()` metrics.
 - `SegmentMatcherEngineTest`: Tests trace matching, dead-end relaxation, and interpolation.
+- `GpxWriterTest`: Tests GPX 1.1 XML serialization, ISO-8601 timestamp formatting, and filename generation.
 - `ManageRegionsViewModelTest`: Tests search and import ViewModel state handling.
+- `HomeViewModelTest`: Tests ride recording state transitions, stop dialog lifecycle, GPX save snackbar/reset, and MapLibre passive location power priority.
+- `RideTrackingControllerTest`: Tests foreground ride recording state machine and GPS location coordinator behavior.
+- `SettingsViewModelTest`: Tests settings DataStore bindings and clamping.
+- `StatsViewModelTest`: Tests `StatsViewModel` reactive summary/unit-system state, percentage and distance formatting, and zero-segment edge cases.
 - `PolylineUtilsTest`: Tests polyline encoding/decoding and JSON parsing fallback.
 
 ### 6.1 On-Device Testing & Critic Agent Protocol
@@ -180,10 +223,12 @@ The Room database (`mopedtrack_db`) contains four primary entities:
 - Foreign Key: `regionId` references `regions(regionId)` with `ON DELETE CASCADE`.
 - Indices: `Index("regionId")`, spatial BBox index `Index("minLat", "maxLat", "minLon", "maxLon")`.
 - Fields: `osmWayId`, `name`, `highwayType`, `isOneway`, `pairedSegmentId` (for two-way roads), `isDeadEnd`, `geometryEncoded` (Google Polyline string), `lengthMeters`, `isCompleted`, `completedAt`.
+- **SQL Stats Aggregation (`RoadSegmentDao`):** `getOverallRoadStatsFlow()` and `getRegionStatsFlow()` compute deduplicated segment counts and physical distances (`RoadStatsAggregate`, `RegionStatsRow`) directly in SQLite without loading `geometryEncoded`, grouping paired carriageways by canonical key (`pairedSegmentId` or `MIN(segmentId, pairedSegmentId)`). Unnamed roads (`name IS NULL OR name = '' OR name = 'Unnamed Road'`) are excluded from overall/region totals and tracked separately via `unnamedCompletedSegments`.
 
 ### `imported_gpx_files` (`ImportedGpxFileEntity`)
 - Primary Key: `fileHash` (SHA-256 string).
-- Fields: `fileName`, `importedAt`, `trackPointCount`, `segmentsCompletedCount`, `encodedTrace`, `isVisibleOnMap`.
+- Fields: `fileName`, `importedAt`, `trackPointCount`, `segmentsCompletedCount`, `encodedTrace`, `isVisibleOnMap`, `distanceMeters`, `durationMillis`, `recordedAt`.
+- **SQL Stats Aggregation (`ImportedGpxFileDao`):** `getGpxArchiveStatsFlow()` aggregates `COUNT(*)` and `COALESCE(SUM(trackPointCount), 0)` into `GpxArchiveStatsAggregate` without loading `encodedTrace`.
 
 ### `debug_traces` (`DebugTraceEntity`)
 - Primary Key: `traceId` (String UUID).
@@ -199,7 +244,9 @@ To optimize memory and rendering performance when handling large regions with th
 - `HomeViewModel` queries Room using the BBox index to update `roadSegments` for the active viewport only.
 
 ### 9.2 GeoJSON Sources & Layers
-- MapLibre layers (`region-bounds-layer`, `road-segments-completed`, `road-segments-uncompleted`, `gpx-traces-layer`, `debug-overlay-layer`) update dynamically via `GeoJsonSource.setGeoJson()`.
+- MapLibre layers (`segments-casing-layer`, `segments-layer`, `active-ride-trace-layer`, and debug overlay layers) update dynamically via reusable `GeoJsonSource.setGeoJson()`.
+- `active-ride-trace-layer` (`#00E5FF` cyan, `4.5dp` width) is layered above `segments-layer` to render `activeTrace` live while `recordingState != IDLE`, and clears automatically when `recordingState == IDLE`.
+- Passive Location Power Rule: `MapLibreCompose` configures `LocationComponent` with `PRIORITY_BALANCED_POWER_ACCURACY` (and seeds last-known location) whenever `recordingState != RECORDING`, reserving `PRIORITY_HIGH_ACCURACY` GPS exclusively for active ride recording.
 - Debug overlay draws corridor polygons calculated by `createCorridorPolygon()` around road geometries to visualize coverage corridors.
 
 ---
@@ -211,14 +258,31 @@ To optimize memory and rendering performance when handling large regions with th
 2. Expose `Flow` and suspend setter function in `SettingsDataStore` & `MopedRepository`.
 3. Wire through `MopedRepositoryImpl`, `SettingsViewModel`, and Compose UI in `SettingsScreen.kt`.
 
+Current `SettingsDataStore` keys (`"settings"` Preferences DataStore):
+- `match_radius_meters` (`Int`, default `15`, range `5..30`)
+- `coverage_threshold_percent` (`Int`, default `80`, range `50..100`)
+- `debug_overlay_enabled` (`Boolean`, default `false`)
+- `show_completed_segments` (`Boolean`, default `true`)
+- `show_uncompleted_segments` (`Boolean`, default `true`)
+- `show_gpx_traces` (`Boolean`, default `true`)
+- `hidden_region_ids` (`Set<String>`, default `emptySet()`): Region IDs toggled off in the HomeScreen Map Layers bottom sheet.
+- `last_camera_lat`, `last_camera_lon`, `last_camera_zoom`, `last_camera_bearing`, `last_camera_tilt` (`Double`)
+- `polling_interval_ms` (`Long`, default `1000L`, range `500L..5000L`): Foreground GPS polling interval while `RECORDING`.
+- `min_displacement_meters` (`Float`, default `2.0f`, range `0.0f..15.0f`): Minimum GPS displacement filter while `RECORDING`.
+- `gpx_export_tree_uri` (`String?`, default `null`): Persisted SAF `OpenDocumentTree` URI for automatic `.gpx` ride exports (falls back to `Documents/MopedTrack` when unset or revoked).
+- `unit_system` (`String`, default `IMPERIAL`): Display unit preference (`IMPERIAL` or `METRIC`).
+- `weekly_auto_refresh` (`Boolean`, default `false`): Enables `RegionRefreshWorker` 7-day unmetered-network background refresh across all downloaded regions.
+
 ### 10.2 Adding a Room Migration
 1. Increment `version` in `@Database` annotation inside `AppDatabase.kt`.
 2. Define a migration object `MIGRATION_X_Y = object : Migration(X, Y) { override fun migrate(db: SupportSQLiteDatabase) { ... } }`.
 3. Add migration to `.addMigrations(...)` in `AppDatabase.getDatabase()`.
 
-### 10.3 Overpass API Resilience
+### 10.3 Overpass API Resilience & Performance
 If Overpass requests fail due to rate limiting (HTTP 429) or timeouts:
-- The app rotates through fallback endpoints in `OVERPASS_ENDPOINTS` (`overpass-api.de`, `kumi.systems`, `private.coffee`, `nchc.org.tw`).
+- The app rotates through global fallback endpoints in `OVERPASS_ENDPOINTS` (`overpass-api.de`, `kumi.systems`, `private.coffee`). Dead hosts (`nchc.org.tw`) and country-restricted regional instances (`osm.ch`, `freemap.sk`) are excluded.
+- Network read timeout is set to 45s per endpoint to quickly bypass unresponsive mirrors.
+- Overpass QL queries target road highways directly (`["highway"~"..."]`) and exclude non-road bridge queries to maximize query execution speed and minimize payload size.
 - Always verify query bounds (`bbox`) are appropriately sized before sending requests.
 
 ---

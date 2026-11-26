@@ -8,6 +8,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -16,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.mopedtrackv2.domain.model.Region
 
@@ -25,25 +27,7 @@ fun ManageRegionsScreen(
     viewModel: ManageRegionsViewModel,
     onBack: () -> Unit
 ) {
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val searchResults by viewModel.searchResults.collectAsState()
-    val savedRegions by viewModel.savedRegions.collectAsState()
-    val isSearching by viewModel.isSearching.collectAsState()
-    val isImporting by viewModel.isImporting.collectAsState()
-    val importingRegionId by viewModel.importingRegionId.collectAsState()
-    val importingRegionName by viewModel.importingRegionName.collectAsState()
-    val importProgress by viewModel.importProgress.collectAsState()
-    val importStatusMessage by viewModel.importStatusMessage.collectAsState()
-    val errorMessage by viewModel.errorMessage.collectAsState()
-
     val snackbarHostState = remember { SnackbarHostState() }
-
-    LaunchedEffect(errorMessage) {
-        errorMessage?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.clearErrorMessage()
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -59,10 +43,55 @@ fun ManageRegionsScreen(
         },
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
     ) { paddingValues ->
-        Column(
+        ManageRegionsPanelContent(
+            viewModel = viewModel,
+            externalSnackbarHostState = snackbarHostState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+        )
+    }
+}
+
+@Composable
+fun ManageRegionsPanelContent(
+    viewModel: ManageRegionsViewModel,
+    modifier: Modifier = Modifier,
+    externalSnackbarHostState: SnackbarHostState? = null
+) {
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
+    val savedRegions by viewModel.savedRegions.collectAsState()
+    val isSearching by viewModel.isSearching.collectAsState()
+    val isImporting by viewModel.isImporting.collectAsState()
+    val importingRegionId by viewModel.importingRegionId.collectAsState()
+    val importingRegionName by viewModel.importingRegionName.collectAsState()
+    val importProgress by viewModel.importProgress.collectAsState()
+    val importStatusMessage by viewModel.importStatusMessage.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+
+    val localSnackbarHostState = remember { SnackbarHostState() }
+    val effectiveSnackbarHostState = externalSnackbarHostState ?: localSnackbarHostState
+
+    LaunchedEffect(viewModel, effectiveSnackbarHostState) {
+        viewModel.snackbarMessages.collect { message ->
+            effectiveSnackbarHostState.showSnackbar(message)
+        }
+    }
+
+    LaunchedEffect(errorMessage, externalSnackbarHostState) {
+        if (externalSnackbarHostState != null) {
+            errorMessage?.let { message ->
+                externalSnackbarHostState.showSnackbar(message)
+                viewModel.clearErrorMessage()
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
                 .padding(16.dp)
         ) {
             OutlinedTextField(
@@ -89,7 +118,39 @@ fun ManageRegionsScreen(
                 singleLine = true
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            if (externalSnackbarHostState == null && errorMessage != null) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { viewModel.clearErrorMessage() }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Dismiss error",
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+            }
 
             if (isSearching) {
                 Row(
@@ -150,7 +211,7 @@ fun ManageRegionsScreen(
                 Text("Search Results", style = MaterialTheme.typography.titleMedium)
                 Spacer(modifier = Modifier.height(8.dp))
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(searchResults) { region ->
+                    items(searchResults, key = { it.regionId }) { region ->
                         val isThisRegionImporting = isImporting && (importingRegionId == region.regionId)
                         RegionItem(
                             region = region,
@@ -178,19 +239,43 @@ fun ManageRegionsScreen(
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
-                LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(savedRegions) { region ->
-                        val isThisRegionImporting = isImporting && (importingRegionId == region.regionId)
-                        SavedRegionItem(
-                            region = region,
-                            onRefreshClick = { viewModel.refreshRegion(region) },
-                            onDeleteClick = { viewModel.deleteRegion(region) },
-                            isActionEnabled = !isImporting,
-                            isLoadingAction = isThisRegionImporting
+                if (savedRegions.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No regions downloaded yet. Search above to add one.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.weight(1f)) {
+                        items(savedRegions, key = { it.regionId }) { region ->
+                            val isThisRegionImporting = isImporting && (importingRegionId == region.regionId)
+                            SavedRegionItem(
+                                region = region,
+                                onRefreshClick = { viewModel.refreshRegion(region) },
+                                onDeleteClick = { viewModel.deleteRegion(region) },
+                                isActionEnabled = !isImporting,
+                                isLoadingAction = isThisRegionImporting
+                            )
+                        }
                     }
                 }
             }
+        }
+
+        if (externalSnackbarHostState == null) {
+            SnackbarHost(
+                hostState = localSnackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(12.dp)
+            )
         }
     }
 }
@@ -216,7 +301,12 @@ fun SavedRegionItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = region.name, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = region.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Text(text = "OSM ID: ${region.osmRelationId}", style = MaterialTheme.typography.bodySmall)
             }
             if (isLoadingAction) {
@@ -263,7 +353,12 @@ fun RegionItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = region.name, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = region.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Text(text = "OSM ID: ${region.osmRelationId}", style = MaterialTheme.typography.bodySmall)
             }
             if (isLoadingAction) {

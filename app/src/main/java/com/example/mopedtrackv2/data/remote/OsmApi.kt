@@ -1,6 +1,8 @@
 package com.example.mopedtrackv2.data.remote
 
 import com.squareup.moshi.JsonClass
+import okhttp3.ResponseBody
+import retrofit2.Response
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.POST
@@ -13,8 +15,12 @@ val OVERPASS_ENDPOINTS = listOf(
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
-    "https://overpass.nchc.org.tw/api/interpreter"
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
 )
+
+/** Maps an Overpass `.../api/interpreter` endpoint to its lightweight `.../api/status` endpoint. */
+fun overpassStatusUrl(interpreterUrl: String): String =
+    interpreterUrl.removeSuffix("/interpreter") + "/status"
 
 class OverpassException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -34,6 +40,11 @@ interface OsmApi {
         @Url url: String = OVERPASS_ENDPOINTS.first(),
         @Field("data") query: String
     ): OverpassResponse
+
+    /** Cheap GET used to check whether an Overpass mirror is alive before sending a heavy query. */
+    @Headers("User-Agent: MopedTrackApp/1.0 (mopedtrack.app@gmail.com)")
+    @GET
+    suspend fun getOverpassStatus(@Url url: String): Response<ResponseBody>
 }
 
 @JsonClass(generateAdapter = true)
@@ -49,7 +60,9 @@ data class NominatimResult(
 
 @JsonClass(generateAdapter = true)
 data class OverpassResponse(
-    val elements: List<OverpassElement>
+    val elements: List<OverpassElement>,
+    /** Overpass reports server-side failures (e.g. "runtime error: Query timed out") here with HTTP 200. */
+    val remark: String? = null
 )
 
 @JsonClass(generateAdapter = true)

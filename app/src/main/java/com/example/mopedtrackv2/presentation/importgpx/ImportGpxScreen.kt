@@ -1,24 +1,28 @@
 package com.example.mopedtrackv2.presentation.importgpx
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.work.WorkInfo
 import com.example.mopedtrackv2.data.local.entity.ImportedGpxFileEntity
+import com.example.mopedtrackv2.domain.gpx.GpxMetadataFormatter
+import com.example.mopedtrackv2.domain.model.UnitSystem
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -30,11 +34,13 @@ fun ImportGpxScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
-    val importState by viewModel.importState.collectAsState()
-    val progressData by viewModel.progressData.collectAsState()
-    val importedFiles by viewModel.importedFiles.collectAsState()
-
     var showMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(viewModel) {
+        viewModel.toastMessages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -49,10 +55,10 @@ fun ImportGpxScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Manage GPX") },
+                title = { Text("Traces") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
@@ -75,87 +81,177 @@ fun ImportGpxScreen(
             )
         }
     ) { padding ->
-        Column(
+        ManageGpxPanelContent(
+            viewModel = viewModel,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+        )
+    }
+}
+
+@Composable
+fun ManageGpxPanelContent(
+    viewModel: ImportGpxViewModel,
+    modifier: Modifier = Modifier
+) {
+    val importState by viewModel.importState.collectAsState()
+    val progressData by viewModel.progressData.collectAsState()
+    val importedFiles by viewModel.importedFiles.collectAsState()
+    val unitSystem by viewModel.unitSystem.collectAsState()
+    var tracePendingDeletion by remember { mutableStateOf<ImportedGpxFileEntity?>(null) }
+
+    tracePendingDeletion?.let { trace ->
+        AlertDialog(
+            onDismissRequest = { tracePendingDeletion = null },
+            title = { Text("Delete Trace?") },
+            text = { Text("Are you sure you want to delete \"${trace.fileName}\"?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteTrace(trace)
+                        tracePendingDeletion = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { tracePendingDeletion = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            FilledTonalButton(
+                onClick = { viewModel.rescanTraces() },
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Re-scan Traces",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        HorizontalDivider()
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (importedFiles.isNotEmpty()) {
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Imported Traces", style = MaterialTheme.typography.titleLarge)
-                        Button(onClick = { viewModel.rescanTraces() }) {
-                            Text("Re-scan Traces")
+                        OutlinedButton(
+                            onClick = { viewModel.setAllVisibility(true) },
+                            enabled = importedFiles.any { !it.isVisibleOnMap },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "Enable All",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.setAllVisibility(false) },
+                            enabled = importedFiles.any { it.isVisibleOnMap },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "Disable All",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                 }
+            }
 
-                if (importedFiles.isEmpty()) {
-                    item {
-                        Text("No GPX files imported yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-
-                items(importedFiles) { file ->
-                    GpxFileItem(
-                        file = file, 
-                        onToggleVisibility = { viewModel.toggleVisibility(file) }
+            if (importedFiles.isEmpty()) {
+                item {
+                    Text(
+                        text = "No GPX files imported yet.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
-            if (importState == WorkInfo.State.ENQUEUED ||
-                importState == WorkInfo.State.RUNNING ||
-                importState == WorkInfo.State.SUCCEEDED ||
-                importState == WorkInfo.State.FAILED
+            items(importedFiles, key = { it.fileHash }) { file ->
+                GpxFileItem(
+                    file = file,
+                    unitSystem = unitSystem,
+                    onToggleVisibility = { viewModel.toggleVisibility(file) },
+                    onDeleteClick = { tracePendingDeletion = file }
+                )
+            }
+        }
+
+        if (importState == WorkInfo.State.ENQUEUED ||
+            importState == WorkInfo.State.RUNNING ||
+            importState == WorkInfo.State.FAILED
+        ) {
+            Surface(
+                tonalElevation = 4.dp,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    tonalElevation = 4.dp,
-                    modifier = Modifier.fillMaxWidth()
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        when (importState) {
-                            WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> {
-                                CircularProgressIndicator()
-                                Spacer(modifier = Modifier.height(16.dp))
-                                val titleText = progressData?.getString("STATUS_TEXT") ?: "Importing..."
-                                Text(titleText, style = MaterialTheme.typography.titleMedium)
+                    when (importState) {
+                        WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING -> {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(12.dp))
+                            val titleText = progressData?.getString("STATUS_TEXT") ?: "Importing..."
+                            Text(titleText, style = MaterialTheme.typography.titleMedium)
 
-                                progressData?.let { data ->
-                                    val current = data.getInt("CURRENT_FILE", 0)
-                                    val total = data.getInt("TOTAL_FILES", 0)
-                                    val skipped = data.getInt("SKIPPED_FILES", 0)
-                                    val newSegments = data.getInt("NEW_SEGMENTS", 0)
+                            progressData?.let { data ->
+                                val current = data.getInt("CURRENT_FILE", 0)
+                                val total = data.getInt("TOTAL_FILES", 0)
+                                val skipped = data.getInt("SKIPPED_FILES", 0)
+                                val newSegments = data.getInt("NEW_SEGMENTS", 0)
 
-                                    Text("Processing $current of $total files")
-                                    if (skipped > 0) {
-                                        Text("Skipped (Duplicates): $skipped")
-                                    }
-                                    Text("New Segments Completed: $newSegments")
+                                Text("Processing $current of $total files")
+                                if (skipped > 0) {
+                                    Text("Skipped (Duplicates): $skipped")
                                 }
+                                Text("New Segments Completed: $newSegments")
                             }
-                            WorkInfo.State.SUCCEEDED -> {
-                                Text("Import Completed Successfully!", color = MaterialTheme.colorScheme.primary)
-                            }
-                            WorkInfo.State.FAILED -> {
-                                Text("Import Failed.", color = MaterialTheme.colorScheme.error)
-                            }
-                            else -> {}
                         }
+                        WorkInfo.State.FAILED -> {
+                            Text("Import Failed.", color = MaterialTheme.colorScheme.error)
+                        }
+                        else -> {}
                     }
                 }
             }
@@ -164,28 +260,73 @@ fun ImportGpxScreen(
 }
 
 @Composable
-fun GpxFileItem(file: ImportedGpxFileEntity, onToggleVisibility: (Boolean) -> Unit) {
+fun GpxFileItem(
+    file: ImportedGpxFileEntity,
+    unitSystem: UnitSystem = UnitSystem.IMPERIAL,
+    onToggleVisibility: (Boolean) -> Unit,
+    onDeleteClick: () -> Unit = {}
+) {
     Card(
+        onClick = { onToggleVisibility(!file.isVisibleOnMap) },
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(file.fileName, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = file.fileName,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 val sdf = remember { SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault()) }
-                val date = remember(file.importedAt) { sdf.format(Date(file.importedAt)) }
-                Text("Imported: $date", style = MaterialTheme.typography.bodySmall)
-                Text("Points: ${file.trackPointCount} | Segments Completed: ${file.segmentsCompletedCount}", style = MaterialTheme.typography.bodySmall)
+                val displayTimestamp = file.recordedAt ?: file.importedAt
+                val dateLabel = if (file.recordedAt != null) "Recorded" else "Imported"
+                val date = remember(displayTimestamp) { sdf.format(Date(displayTimestamp)) }
+                Text(
+                    text = "$dateLabel: $date",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val resolvedDistanceMeters = remember(file.distanceMeters, file.encodedTrace, file.trackPointCount) {
+                    if (file.distanceMeters > 0.0 || file.trackPointCount < 2) {
+                        file.distanceMeters
+                    } else {
+                        GpxMetadataFormatter.computeDistanceFromEncodedTrace(file.encodedTrace)
+                    }
+                }
+                val distanceText = remember(resolvedDistanceMeters, unitSystem) {
+                    GpxMetadataFormatter.formatDistance(resolvedDistanceMeters, unitSystem)
+                }
+                val durationText = remember(file.durationMillis) {
+                    GpxMetadataFormatter.formatDuration(file.durationMillis)
+                }
+                Text(
+                    text = "Distance: $distanceText | Time: $durationText",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "Points: ${file.trackPointCount} | Segments: ${file.segmentsCompletedCount}",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
+            Spacer(modifier = Modifier.width(8.dp))
             Switch(
                 checked = file.isVisibleOnMap,
                 onCheckedChange = onToggleVisibility
             )
+            IconButton(onClick = onDeleteClick) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = "Delete Trace",
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 }

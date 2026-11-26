@@ -11,8 +11,8 @@ import com.example.mopedtrackv2.MopedApplication
 import com.example.mopedtrackv2.data.local.entity.ImportedGpxFileEntity
 import com.example.mopedtrackv2.domain.engine.SegmentMatcherEngine
 import com.example.mopedtrackv2.domain.gpx.GpxParser
+import com.example.mopedtrackv2.utils.HashUtils
 import kotlinx.coroutines.flow.first
-import java.security.MessageDigest
 
 class GpxBulkImportWorker(
     appContext: Context,
@@ -30,6 +30,8 @@ class GpxBulkImportWorker(
 
         val rootFolder = DocumentFile.fromTreeUri(applicationContext, folderUri)
             ?: return Result.failure()
+
+        val storageSession = repository.openGpxStorageSession()
 
         val allGpxFiles = mutableListOf<DocumentFile>()
         collectGpxFiles(rootFolder, allGpxFiles)
@@ -53,19 +55,25 @@ class GpxBulkImportWorker(
             try {
                 applicationContext.contentResolver.openInputStream(file.uri)?.use { inputStream ->
                     val bytes = inputStream.readBytes()
-                    val hash = calculateSha256(bytes)
+                    val hash = HashUtils.sha256Hex(bytes)
+                    val fileName = file.name ?: "trace_${hash.take(8)}.gpx"
 
                     val existing = repository.getImportedFileByHash(hash)
                     if (existing != null && existing.encodedTrace.isNotBlank()) {
+                        storageSession.storeTrace(fileName, hash, bytes)
                         skippedCount++
                         return@use // Skip already processed and encoded
                     }
 
                     // Parse
-                    val tracePoints = GpxParser.parse(bytes.inputStream())
+                    val parseResult = GpxParser.parseWithMetadata(bytes.inputStream())
+                    val tracePoints = parseResult.points
                     if (tracePoints.isEmpty()) {
                         return@use
                     }
+
+                    // Copy to internal storage and external folder (if defined)
+                    storageSession.storeTrace(fileName, hash, bytes)
 
                     // Find bounds
                     val minLat = tracePoints.minOf { it.lat }
@@ -106,12 +114,15 @@ class GpxBulkImportWorker(
                     repository.insertImportedFile(
                         ImportedGpxFileEntity(
                             fileHash = hash,
-                            fileName = file.name ?: "unknown.gpx",
+                            fileName = fileName,
                             importedAt = System.currentTimeMillis(),
                             trackPointCount = tracePoints.size,
                             segmentsCompletedCount = fileNewSegments,
                             encodedTrace = encodedTrace,
-                            isVisibleOnMap = existing?.isVisibleOnMap ?: false
+                            isVisibleOnMap = existing?.isVisibleOnMap ?: false,
+                            distanceMeters = parseResult.distanceMeters,
+                            durationMillis = parseResult.durationMillis,
+                            recordedAt = parseResult.recordedAt
                         )
                     )
                 }
@@ -140,11 +151,5 @@ class GpxBulkImportWorker(
                 list.add(file)
             }
         }
-    }
-
-    private fun calculateSha256(bytes: ByteArray): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(bytes)
-        return digest.fold("") { str, it -> str + "%02x".format(it) }
     }
 }

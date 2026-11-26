@@ -82,8 +82,16 @@ class GpxRescanWorker(
                             totalNewlyCompletedSegments += fileNewSegments
                         }
 
+                        val resolvedDistance = if (file.distanceMeters <= 0.0 && tracePoints.size >= 2) {
+                            com.example.mopedtrackv2.domain.gpx.GpxParser.computeDistanceMeters(tracePoints)
+                        } else {
+                            file.distanceMeters
+                        }
                         repository.insertImportedFile(
-                            file.copy(segmentsCompletedCount = fileNewSegments)
+                            file.copy(
+                                segmentsCompletedCount = fileNewSegments,
+                                distanceMeters = resolvedDistance
+                            )
                         )
                     }
                 }

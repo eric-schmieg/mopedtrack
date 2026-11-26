@@ -31,6 +31,19 @@ object MathUtils {
     }
 
     /**
+     * Calculates the minimum angle difference in degrees (0 to 90) between two bearings,
+     * taking into account that driving in either direction along a road (same or reverse orientation)
+     * is considered parallel.
+     * 0 degrees = perfectly parallel (same or opposite direction)
+     * 90 degrees = perfectly perpendicular
+     */
+    fun parallelAngleDifferenceDegrees(b1: Double, b2: Double): Double {
+        val diff = abs(b1 - b2) % 360.0
+        val normalized = if (diff > 180.0) 360.0 - diff else diff
+        return if (normalized > 90.0) 180.0 - normalized else normalized
+    }
+
+    /**
      * Calculates perpendicular or endpoint distance in meters from point P to line segment A->B.
      */
     fun distanceToLineSegmentMeters(
